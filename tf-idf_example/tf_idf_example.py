@@ -102,6 +102,7 @@ class Main():
         }
         # 设置`n_jobs = -1`，计算机就会帮你自动检测并用上你所有的核进行并行计算。
         gs_clf = GridSearchCV(text_clf_2, parameters, n_jobs=2)
+        #
 
 
 if __name__ == '__main__':
