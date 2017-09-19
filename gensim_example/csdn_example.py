@@ -7,7 +7,7 @@
 @site:https://github.com/liujm7
 @contact: kaka206@163.com
 @software: PyCharm
-@file: csdn_exmple.py
+@file: csdn_example.py
 @time: 2017/9/18 
 """
 
