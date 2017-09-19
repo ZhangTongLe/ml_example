@@ -48,7 +48,8 @@ class loadFolders(object):  # 迭代器
 
 class loadFiles(object):
     """
-    Description:使用迭代器来载入文件,
+    Description:使用迭代器来载入文件, 返回类别和文件内容
+    备注: 类别是每个文件夹名字
     """
 
     def __init__(self, par_path):
@@ -213,31 +214,36 @@ def main():
     """
 
     content_rm_list = []
-    if not os.path.exists(path_dictionary):
+    if not os.path.exists(path_dictionary):  # 判断是否有路径文件夹
         print('=== 未检测到有词典存在，开始遍历生成词典 ===')
-        files = loadFiles(path_doc_root)
-        for i, msg in enumerate(files):
+        files = loadFiles(path_doc_root)  # 循环载入文件，返回类名(文件夹名)，文件内容
+        for i, msg in enumerate(files):  # 使用enumerate遍历序号以及文件内容
             if i % n == 0:
-                catg = msg[0]
-                content = msg[1]
-                content = contentSeg(content)
-                content = contentRm(content)
+                catg = msg[0]  # 获取类名
+                content = msg[1]  # 获取内容
+                content = contentSeg(content)  # 分词
+                content = contentRm(content)  # 去掉停用词
                 content_rm_list.append(content)
-                if int(i / n) % 1000 == 0:
+                if int(i / n) % 1000 == 0:  # 每处理1000个文档，打印
                     print('{t} *** {i} \t docs has been dealed'
                           .format(i=i, t=time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())))
 
-        dictionary = corpora.Dictionary(content_rm_list)
+        dictionary = corpora.Dictionary(content_rm_list)  # 生成字典
+        # 过滤词频较少的词语,减小矩阵
         small_freq_ids = [tokenid for tokenid, docfreq in dictionary.dfs.items() if docfreq < 5]
         dictionary.filter_tokens(small_freq_ids)
+        # 消除id序列在删除词后产生的不连续的缺口
         dictionary.compactify()
+        # 保存字典
         dictionary.save(path_dictionary)
         print('=== 词典已经生成 ===')
     else:
         print('=== 检测到词典已经存在，跳过该阶段 ===')
 
-    # # ===================================================================
-    # # # # 第二阶段，  开始将文档转化成tfidf
+    """
+    ===================================================================
+            第二阶段，  开始将文档转化成tfidf
+    """
     if not os.path.exists(path_tmp_tfidf):
         print('=== 未检测到有tfidf文件夹存在，开始生成tfidf向量 ===')
         # 如果指定的位置没有tfidf文档，则生成一个。如果有，则跳过该阶段
@@ -245,6 +251,7 @@ def main():
             dictionary = corpora.Dictionary.load(path_dictionary)
         os.makedirs(path_tmp_tfidf)
         files = loadFiles(path_doc_root)
+        # 使用gensim的models，将文档转化成tfidf向量
         tfidf_model = models.TfidfModel(dictionary=dictionary)
         corpus_tfidf = {}
         for i, msg in enumerate(files):
@@ -253,19 +260,20 @@ def main():
                 content = msg[1]
                 content = contentSeg(content)
                 content = contentRm(content)
-                content_bow = dictionary.doc2bow(content)
-                content_tfidf = tfidf_model[content_bow]
-                tmp = corpus_tfidf.get(catg, [])
-                tmp.append(content_tfidf)
-                if tmp.__len__() == 1:
+                content_bow = dictionary.doc2bow(content)  # 使用字典将内容转化成词袋
+                content_tfidf = tfidf_model[content_bow]  # 将词袋向量幻化成tfidf向量
+                tmp = corpus_tfidf.get(catg, [])  # dict.get 获取类别，如果false，返回列表[]
+                tmp.append(content_tfidf)  # 添加新的tfidf向量到该类列表中
+                if tmp.__len__() == 1:  # 如果这个类别长度为1，直接在定义字典中定义类别
                     corpus_tfidf[catg] = tmp
 
             if i % 10000 == 0:
                 print('{i} files is dealed'.format(i=i))
 
         # 将tfidf中间结果存储起来
-        catgs = list(corpus_tfidf.keys())
+        catgs = list(corpus_tfidf.keys())  # 获取字典的key列表，以便分类序列化存储
         for catg in catgs:
+            # 分类序列化存储tfidf向量
             corpora.MmCorpus.serialize('{f}{s}{c}.mm'.format(f=path_tmp_tfidf, s=os.sep, c=catg),
                                        corpus_tfidf.get(catg),
                                        id2word=dictionary
@@ -275,8 +283,10 @@ def main():
     else:
         print('=== 检测到tfidf向量已经生成，跳过该阶段 ===')
 
-    # # ===================================================================
-    # # # # 第三阶段，  开始将tfidf转化成lsi
+    """
+     ===================================================================
+             第三阶段，  开始将tfidf转化成lsi
+    """
     if not os.path.exists(path_tmp_lsi):
         print('=== 未检测到有lsi文件夹存在，开始生成lsi向量 ===')
         if not dictionary:
@@ -287,9 +297,7 @@ def main():
             files = os.listdir(path_tmp_tfidf)
             catg_list = []
             for file in files:
-                # if "index" in file:
-                #     continue
-                t = file.split('.')[0]
+                t = file.split('.')[0]  # 文件存储类型xx.mm和xx.mm.index
                 if t not in catg_list:
                     catg_list.append(t)
 
@@ -302,12 +310,20 @@ def main():
 
         # 生成 lsi model
         os.makedirs(path_tmp_lsi)
-        corpus_tfidf_total = []
+        corpus_tfidf_total = []  # 所有tfidf向量列表
         catgs = list(corpus_tfidf.keys())
         for catg in catgs:
             tmp = corpus_tfidf.get(catg)
             corpus_tfidf_total += tmp
 
+        # 使用gensim models.LsiModel生成lsi向量
+        # 模型说明: LSI,英文：Latent Semantic Indexing的缩写，中文意译是潜在语义索引
+        # LSA(LSI)使用SVD来对单词-文档矩阵进行分解。SVD可以看作是从单词-文档矩阵中发现不相关的索引变量(因子)，
+        # 将原来的数据映射到语义空间内。在单词-文档矩阵中不相似的两个文档，可能在语义空间内比较相似。
+        # 参数说明
+        # corpus: tfiidf向量列表
+        # id2word: 字典
+        # num_topics: 主题
         lsi_model = models.LsiModel(corpus=corpus_tfidf_total, id2word=dictionary, num_topics=50)
 
         # 将lsi模型存储到磁盘上
@@ -322,7 +338,7 @@ def main():
         for catg in catgs:
             corpu = [lsi_model[doc] for doc in corpus_tfidf.get(catg)]
             corpus_lsi[catg] = corpu
-            corpus_tfidf.pop(catg)
+            corpus_tfidf.pop(catg)  # 使用pop来删除，节省内存空间
             corpora.MmCorpus.serialize('{f}{s}{c}.mm'.format(f=path_tmp_lsi, s=os.sep, c=catg),
                                        corpu,
                                        id2word=dictionary)
@@ -330,8 +346,10 @@ def main():
     else:
         print('=== 检测到lsi向量已经生成，跳过该阶段 ===')
 
-    # # ===================================================================
-    # # # # 第四阶段，  分类
+    """
+    ===================================================================
+            第四阶段，  分类
+    """
     if not os.path.exists(path_tmp_predictor):
         print('=== 未检测到判断器存在，开始进行分类过程 ===')
         if not corpus_lsi:  # 如果跳过了第三阶段
@@ -361,16 +379,16 @@ def main():
                 catg_list.append(t)
 
         for count, catg in enumerate(catg_list):
-            tmp = corpus_lsi[catg]
-            tag_list += [count] * tmp.__len__()
-            doc_num_list.append(tmp.__len__())
-            corpus_lsi_total += tmp
-            corpus_lsi.pop(catg)
+            tmp = corpus_lsi[catg]  # 读取catg对应的lsi向量列表
+            tag_list += [count] * tmp.__len__()  # 定义tag_list,lsi向量列表生成对应数量的标签
+            doc_num_list.append(tmp.__len__())  # 列表对应的文档数量列表
+            corpus_lsi_total += tmp  # lsi向量总列表
+            corpus_lsi.pop(catg)  # pop该类别
 
         # 将gensim的mm表示转化成numpy矩阵表示
-        data = []
-        rows = []
-        cols = []
+        data = []  # 数据
+        rows = []  # 矩阵行
+        cols = []  # 矩阵列
         line_count = 0
         for line in corpus_lsi_total:
             for elem in line:
@@ -381,13 +399,13 @@ def main():
 
         lsi_matrix = csr_matrix((data, (rows, cols))).toarray()
         # 生成训练集和测试集
-        rarray = np.random.random(size=line_count)
+        rarray = np.random.random(size=line_count)  # 随机矩阵，用于区分训练集合
         train_set = []
         train_tag = []
         test_set = []
         test_tag = []
         for i in range(line_count):
-            if rarray[i] < 0.8:
+            if rarray[i] < 0.8:  # 随机值<0.8 定义为训练集合 其余为测试机和
                 train_set.append(lsi_matrix[i, :])
                 train_tag.append(tag_list[i])
             else:
@@ -397,13 +415,15 @@ def main():
         # 生成分类器
         predictor = svmClassify(train_set, train_tag, test_set, test_tag)
         x = open(path_tmp_predictor, 'wb')
-        pkl.dump(predictor, x)
+        pkl.dump(predictor, x)  # 保存分类器
         x.close()
     else:
         print("=== 检测到分类器已经生成，跳过该阶段 ===")
 
-    # # ===================================================================
-    # # # # 第五阶段，  对新文本进行判断
+    """ 
+     ===================================================================
+            第五阶段，  对新文本进行判断
+    """
     if not dictionary:
         dictionary = corpora.Dictionary.load(path_dictionary)
     if not lsi_model:
@@ -427,16 +447,16 @@ def main():
     """
     print("原文本内容为:")
     print(demo_doc)
-    demo_doc = list(jieba.cut(demo_doc, cut_all=False))
+    demo_doc = list(jieba.cut(demo_doc, cut_all=False))  # 分词
     for elem in demo_doc:
         print elem
-    demo_doc = contentRm(demo_doc)
+    demo_doc = contentRm(demo_doc)  # 删除停用词
     for elem in demo_doc:
         print elem
-    demo_bow = dictionary.doc2bow(demo_doc)
+    demo_bow = dictionary.doc2bow(demo_doc)  # 词袋
     tfidf_model = models.TfidfModel(dictionary=dictionary)
-    demo_tfidf = tfidf_model[demo_bow]
-    demo_lsi = lsi_model[demo_tfidf]
+    demo_tfidf = tfidf_model[demo_bow]  # tfidf向量
+    demo_lsi = lsi_model[demo_tfidf]  # lis向量
     data = []
     cols = []
     rows = []
@@ -444,7 +464,7 @@ def main():
         data.append(item[1])
         cols.append(item[0])
         rows.append(0)
-    demo_matrix = csr_matrix((data, (rows, cols))).toarray()
+    demo_matrix = csr_matrix((data, (rows, cols))).toarray()  # lsi向量矩阵
     x = predictor.predict(demo_matrix)
     print(x[0])
     print('分类结果为：{x}'.format(x=catg_list[x[0]]))
