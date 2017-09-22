@@ -132,7 +132,7 @@ def sim(x, y, metric='cosine'):
 
 
 class UserBasedCF(object):
-    def __init__(self, data, K=10, type='cosine'):
+    def __init__(self, data, K=-1, type='cosine'):
         """
         Description: 进行用户协同过滤初始化
         n_items : 商品的数量
@@ -141,79 +141,56 @@ class UserBasedCF(object):
         """
 
         self.data = data
-        self.user_similarity = matrix_sim(self.data, type=type)
+        self.user_similarity = matrix_sim(data, type=type)
         self.n_items = len(data[0])
+        self.n_uers = len(data)
         self.K = K
 
-    def get_k_neighs_per_user(self, u):
+    def user_neighs_modify_item_similarity(self):
         """
-        Description: 获取每个用户的最相近用户的K个用户列表
-        作用: 1.为了压缩计算矩阵的维数，2.相似度不高的用户可能产生负作用
-        :param u: 用户u
-        :param K: 邻居数
-        :return:neighs_ratings_matrix 邻居的评分矩阵;neighs_similarity:邻居相似性
-        """
-        neighs_ratings_matrix = np.zeros((self.K + 1, self.n_items))
-        neighs_similarity = []
-        key = [x for x in xrange(len(self.user_similarity[u]))]
-        similarity = dict(zip(key, self.user_similarity[u].tolist()))
-        # 第一行为用户本身的评分矩阵
-        neighs_ratings_matrix[0] = self.data[u]
-        # 第一个元素为1，表示用户自身相关性为1
-        neighs_similarity.append(1)
-        count = 1
-
-        for k, v in sorted(similarity.items(), key=lambda item: -item[1])[:self.K]:  # 根据相似性排序前K个用户
-            neighs_ratings_matrix[count] = self.data[k]  # 将用户k的评分填充到邻居评分矩阵
-            neighs_similarity.append(self.user_similarity[u].tolist()[k])  # 将相似性填充到邻居相似性列表
-            count += 1
-        return neighs_ratings_matrix, neighs_similarity
-
-    def user_based_recommend(self, u, top=10):
-        """
-        Descriptsion:获取某个用户的前top个商品推荐列表
-        :param u:用户u
-        :param K: 使用K个邻居计算商品分数
-        :param top: 商品推荐数量
-        :return:recommend_dict : 返回推荐商品字典
-        """
-
-        # 获取邻居矩阵，获取邻居相似性列表
-        neighs_ratings_matrix, neighs_similarity = self.get_k_neighs_per_user(u)
-        recommend_dict = dict()
-        # axis=1 按照行(用户)来计算均值
-        mean_user_rating = neighs_ratings_matrix.mean(axis=1)
-        # 评分矩阵减去均值
-        ratings_diff = (neighs_ratings_matrix - mean_user_rating[:, np.newaxis])
-        # 矩阵乘法，计算用户u对所用items的评分
-        ratings = sum(self.data[u]) / len(self.data[u] > 0) + np.array(neighs_similarity).dot(
-            ratings_diff) / sum(neighs_similarity)
-        keys = [x for x in xrange(len(ratings))]
-        key_rating = dict(zip(keys, ratings))
-        cnt = 0
-        # 遍历top推荐列表
-        for k, rating in sorted(key_rating.items(), key=lambda item: -item[1]):
-            if cnt < top and self.data[u][k] == 0:  # 需要评分等于0,即没有评分的商品
-                recommend_dict.get(k + 1, None)
-                recommend_dict[k + 1] = rating
-                cnt += 1
-            elif cnt == top:
-                break
-        return recommend_dict
-
-    def users_based_recommend(self):
-        """
-        Description: 完成整体推荐字典
+        Descrption: 根据参数K，选择相似度最高的K个邻居,生成相似度矩阵,邻居的相似度为0.0
         :return:
         """
+        user_neighs_similarity = np.zeros((self.n_uers, self.n_uers))
+        for i in xrange(self.n_uers):
+            items = np.argsort(self.user_similarity[i])[::-1][:self.K]  # 根据相似度逆序返回商品id列表
+            items = items[items != i]  # 去掉本身
+            for j in xrange(self.n_uers):
+                if j in items:  # triangular matrix
+                    user_neighs_similarity[i, j] = self.user_similarity[i, j]
+        self.user_similarity = user_neighs_similarity
+
+    def users_based_recommend(self, top=10):
+        """
+
+        :param top:
+        :return:
+        """
+        if self.K != -1:
+            self.user_neighs_modify_item_similarity()
+        mean_user_rating = self.data.sum(axis=1, dtype=float) / np.count_nonzero(self.data, axis=1)
+        rating_diff = self.data - mean_user_rating[:, np.newaxis]
+        pred = mean_user_rating[:, np.newaxis] + self.user_similarity.dot(
+            rating_diff) / np.array([np.abs(self.user_similarity).sum(axis=1)]).T
         recommend_dict_all = dict()
         for u in xrange(len(self.data)):
-            recommend_dict_all[u] = self.user_based_recommend(u)
+            items_idx = np.argsort(pred[u])[::-1]
+            recommend_dict = dict()
+            cnt = 0
+            for i in items_idx:
+                if self.data[u, i] == 0 and cnt < top:
+                    recommend_dict[i + 1] = pred[u, i]
+                    cnt += 1
+                elif cnt == top:
+                    break
+            recommend_dict_all[u] = recommend_dict
+
+        print "max:", pred.max()
         return recommend_dict_all
 
 
 class ItemBasedCF(object):
-    def __init__(self, data, K=10, type='cosine'):
+    def __init__(self, data, K=-1, type='cosine'):
         """
         Description: 进行商品协同过滤初始化
         n_users : 商品的数量
@@ -224,21 +201,27 @@ class ItemBasedCF(object):
         self.data = data
         self.item_similarity = matrix_sim(data.T, type=type)
         self.n_users = len(self.data)
+        self.n_items = len(self.data[0])
         self.K = K
 
     def item_neighs_modify_item_similarity(self):
-        for i in xrange(len(self.item_similarity)):
-            items = np.argsort(self.item_similarity[i])[::-1]  # 根据相似度逆序返回商品id列表
+        """
+        Descrption:
+        :return:
+        """
+        item_neighs_similarity = np.zeros((self.n_items, self.n_items))
+        for i in xrange(n_items):
+            items = np.argsort(self.item_similarity[i])[::-1][:self.K]  # 根据相似度逆序返回商品id列表
             items = items[items != i]  # 去掉本身
-            self.item_similarity[i, i] = 0.0
-            for j in xrange(i, len(self.item_similarity)):
-                if j not in items:  # triangular matrix
-                    self.item_similarity[i, j] = 0.0
-                    self.item_similarity[j, i] = 0.0
+            for j in xrange(n_items):
+                if j in items:  # triangular matrix
+                    item_neighs_similarity[i, j] = self.item_similarity[i, j]
+        self.item_similarity = item_neighs_similarity
 
     def items_based_recommend(self, top=10):
-        pred = self.data.mean(axis=0)[:, np.newaxis].T + self.data.dot(
-            self.item_similarity) / np.array([np.abs(self.item_similarity).sum(axis=1)])
+        if self.K != -1:
+            self.item_neighs_modify_item_similarity()
+        pred = self.data.dot(self.item_similarity) / np.array([np.abs(self.item_similarity).sum(axis=1)])
         recommend_dict_all = dict()
         for u in xrange(len(self.data)):
             items_idx = np.argsort(pred[u])[::-1]
@@ -246,12 +229,13 @@ class ItemBasedCF(object):
             cnt = 0
             for i in items_idx:
                 if self.data[u, i] == 0 and cnt < top:
-                    recommend_dict[i+1] = pred[u, i]
+                    recommend_dict[i + 1] = pred[u, i]
                     cnt += 1
                 elif cnt == top:
                     break
             recommend_dict_all[u] = recommend_dict
 
+        print "max:", pred.max()
         return recommend_dict_all
 
 
@@ -264,8 +248,10 @@ if __name__ == '__main__':
     import os
 
     os.chdir("D:\\work\\liujm\\2017\\9\\20170911\\ml-100k\\ml-100k")
+    # os.chdir("D:\\work\\liujm\\2017\\9\\20170919\\ml-20m\\ml-20m")
     header = ['user_id', 'item_id', 'rating', 'timestamp']
     # df = pd.read_csv(".\\ml-100k\u.data", sep="\t", names=header)
+    # df = pd.read_csv(".\\ratings.csv", sep=',', names=header)
     df = pd.read_csv(".\\u.data", sep="\t", names=header)
     n_users = df.user_id.unique().shape[0]
     n_items = df.item_id.unique().shape[0]
@@ -277,16 +263,13 @@ if __name__ == '__main__':
         data_matrix[line[1] - 1, line[2] - 1] = line[3]
     import time
 
-    # print "time.time(): %f " % time.time()
-    # dm = UserBasedCF(data_matrix, K=50)
-    # recommend_dict_all = dm.users_based_recommend()
-    # print "time.time(): %f " % time.time()
-    # for k, v in recommend_dict_all.iteritems():
-    #     print k, "=>", v
     print "time.time(): %f " % time.time()
-    dm = ItemBasedCF(data_matrix, K=50)
-    recommend_dict_all = dm.items_based_recommend()
+    dm = UserBasedCF(data_matrix)
+    recommend_dict_all = dm.users_based_recommend(top=20)
     print "time.time(): %f " % time.time()
-    for k, v in recommend_dict_all.iteritems():
-        print k, "=>", v
-
+    print recommend_dict_all.get(0, [])
+    print "time.time(): %f " % time.time()
+    dm = ItemBasedCF(data_matrix)
+    recommend_dict_all = dm.items_based_recommend(top=20)
+    print recommend_dict_all.get(0, [])
+    print "time.time(): %f " % time.time()
