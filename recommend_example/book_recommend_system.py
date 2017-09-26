@@ -13,6 +13,7 @@
 import numpy as np
 import pandas as pd
 import collections
+import copy
 from scipy.stats import pearsonr
 from sklearn.metrics import pairwise
 from scipy.spatial.distance import cosine
@@ -62,6 +63,24 @@ def read_data(path="D:\\work\\recommend_system\\utilitymatrix.csv"):
     """
     df = pd.read_csv(path)
     return df
+
+
+def ratings_matrix(dataframe):
+    """
+    Description:评分记录转化成评分矩阵
+    :param dataframe:
+    :return:
+    """
+    n_users = dataframe.user_id.unique().shape[0]
+    n_items = dataframe.item_id.unique().shape[0]
+    print 'Number of users = ' + str(n_users) + ' | Number of movies = ' + str(n_items)
+
+    # 生成评分矩阵
+    data_matrix = np.zeros((n_users, n_items))
+    for line in df.itertuples():
+        data_matrix[line[1] - 1, line[2] - 1] = line[3]
+
+    return data_matrix
 
 
 def imputation(inp, Ri):
@@ -210,10 +229,10 @@ class ItemBasedCF(object):
         :return:
         """
         item_neighs_similarity = np.zeros((self.n_items, self.n_items))
-        for i in xrange(n_items):
+        for i in xrange(self.n_items):
             items = np.argsort(self.item_similarity[i])[::-1][:self.K]  # 根据相似度逆序返回商品id列表
             items = items[items != i]  # 去掉本身
-            for j in xrange(n_items):
+            for j in xrange(self.n_items):
                 if j in items:  # triangular matrix
                     item_neighs_similarity[i, j] = self.item_similarity[i, j]
         self.item_similarity = item_neighs_similarity
@@ -239,6 +258,183 @@ class ItemBasedCF(object):
         return recommend_dict_all
 
 
+class ModelCF(object):
+    """
+    Description: 基于模型的协同过滤
+    """
+
+    def __init__(self, Umatrix):
+        self.Umatirx = Umatrix
+
+    def SGD(self, K, iterations=3, alpha=1, l=0.1, tol=0.001):
+        """
+        Descrption: Stochastic Gradient Descent 随机梯度下降
+        :param K: 特征的数量
+        :param iterations: 迭代次数
+        :param alpha: 学习速率
+        :param l: 正则化系数,防止过拟合
+        :param tol: 收敛判据 convergence tolerance
+        :return:
+        """
+        matrix = self.Umatirx
+        # 获取矩阵的行数
+        n_rows = len(matrix)
+        # 获取矩阵的列数
+        n_cols = len(matrix)
+        # 生成两个随机矩阵
+        P = np.random.rand(n_rows, K)
+        Q = np.random.rand(n_cols, K)
+        Qt = Q.T
+        cost = -1
+        for it in xrange(iterations):
+            for i in xrange(n_rows):
+                for j in xrange(n_cols):
+                    if matrix[i][j] > 0:
+                        # 误差
+                        eij = matrix[i][j] - np.dot(P[i, :], Qt[:, j])
+                        for k in xrange(K):
+                            P[i][k] += np.round(alpha * (2 * eij * Qt[k][j] - l * P[i][k]), 0)
+                            Qt[k][j] += np.round(alpha * (2 * eij * P[i][k] - l * Qt[k][j]), 0)
+            cost = 0
+            for i in xrange(n_rows):
+                for j in xrange(n_cols):
+                    if matrix[i][j] > 0:
+                        cost += pow(matrix[i][j] - np.dot(P[i, :], Qt[:, j]), 2)
+                        for k in xrange(K):
+                            cost += l * (pow(P[i, k], 2) + pow(Qt[k, j], 2))
+
+            print "第" + str(it) + "迭代,cost:" + str(round(cost, 0))
+            # alpha = alpha * 0.9
+            if cost < tol:
+                break
+
+        return np.round(np.dot(P, Qt), 0)
+
+    def ALS(self, K, iterations=3, l=0.001, tol=0.001):
+        """
+        Description: Alternating Least Square ALS 交替最小二乘法
+        通常没有SGD/SVD精确,但是速度较快，易用于并行计算
+        :param K: 特征维数
+        :param iterations: 迭代次数
+        :param l: 正则化系数
+        :param tol: 收敛判据
+        :return:
+        """
+        matrix = self.Umatirx
+
+        n_rows = len(matrix)
+        n_cols = len(matrix[0])
+        P = np.random.rand(n_rows, K)
+        Q = np.random.rand(n_cols, K)
+        Qt = Q.T
+        err = 0.
+        matrix = matrix.astype('float')
+        mask = matrix > 0
+        mask[mask == True] = 1
+        mask[mask == False] = 0
+        mask = mask.astype(np.float64, copy=False)
+        for it in xrange(iterations):
+            for u, mask_u in enumerate(mask):
+                P[u] = np.linalg.solve(np.dot(Qt, np.dot(np.diag(mask_u), Q)) + l * np.eye(K),
+                                       np.dot(Qt, np.dot(np.diag(mask_u), matrix[u].T))).T
+
+            for i, mask_i in enumerate(mask.T):
+                Qt[:, i] = np.linalg.solve(np.dot(P.T, np.dot(np.diag(mask_i), P)) + l * np.eye(K),
+                                           np.dot(P.T, np.dot(np.diag(mask_i), matrix[:, i])))
+
+            err = np.sum((mask * (matrix - np.dot(P, Qt))) ** 2)
+            if err < tol:
+                break
+            print "第" + str(it + 1) + "迭代,cost:" + str(round(err, 0))
+
+        return np.round(np.dot(P, Qt), 0)
+
+    def NMF_alg(self, K, inp='none', l=0.001):
+        """
+        Description: Non-negative Matrix Factorization 非负矩阵分解
+        :param K: 特征维度
+        :param inp: 缺失值替换方法
+        :param l: 正则化系数
+        :return:
+        """
+        from sklearn.decomposition import NMF
+        matrix = self.Umatirx
+        R_tmp = copy.copy(matrix)
+        R_tmp = R_tmp.astype(float)
+        # inputation
+        if inp != 'none':
+            R_tmp = imputation(inp, matrix)
+        nmf = NMF(n_components=K, alpha=l)
+        P = nmf.fit_transform(R_tmp)
+        R_tmp = np.dot(P, nmf.components_)
+        return R_tmp
+
+    def SVD(self, K, inp='none'):
+        """
+        Description: Singular Value Decomposition 奇异值分解
+        :param K: 特征
+        :param inp: 缺失值替代方法
+        :return:
+        """
+
+        from sklearn.decomposition import TruncatedSVD
+        matrix = self.Umatirx
+        R_tmp = copy.copy(matrix)
+        R_tmp = R_tmp.astype(float)
+        # inputation
+        if inp != 'none':
+            R_tmp = imputation(inp, matrix)
+
+        mean_user_rating = R_tmp.sum(axis=1, dtype=float) / np.count_nonzero(R_tmp, axis=1)
+        rating_diff = R_tmp - mean_user_rating[:, np.newaxis]
+        svd = TruncatedSVD(n_components=K, random_state=4)
+        R_k = svd.fit_transform(rating_diff)
+        R_tmp = svd.inverse_transform(R_k)
+        R_tmp = mean_user_rating[:, np.newaxis] + R_tmp
+
+        return np.round(R_tmp, 0)
+
+    def SVD_EM(self, K, inp='none', iterations=1000, tol=0.001):
+        """
+        Description : SVD+最大期望算法
+        :param K: 特征维数
+        :param inp: 缺失值替代方法
+        :param iterations: 迭代次数
+        :param tol: 收敛判据
+        :return:
+        """
+
+        from sklearn.decomposition import TruncatedSVD
+        matrix = self.Umatirx
+        R_tmp = copy.copy(matrix)
+        n_rows = len(matrix)
+        n_cols = len(matrix[0])
+        # inputation
+        if inp != 'none':
+            R_tmp = imputation(inp, matrix)
+
+        # define svd
+        svd = TruncatedSVD(n_components=K, random_state=4)
+        err = -1
+        for it in xrange(iterations):
+            # m-step
+            R_k = svd.fit_transform(R_tmp)
+            R_tmp = svd.inverse_transform(R_k)
+            # e-step and error evaluation
+            err = 0
+            for i in xrange(n_rows):
+                for j in xrange(n_cols):
+                    if matrix[i][j] > 0:
+                        err += pow(matrix[i][j] - R_tmp[i][j], 2)
+                        R_tmp[i][j] = matrix[i][j]
+
+            print "第" + str(it + 1) + "迭代,cost:" + str(round(err, 0))
+            if err < tol:
+                print it, 'tol reached'
+                break
+        return np.round(R_tmp, 0)
+
+
 class Main():
     def __init__(self):
         pass
@@ -253,23 +449,27 @@ if __name__ == '__main__':
     # df = pd.read_csv(".\\ml-100k\u.data", sep="\t", names=header)
     # df = pd.read_csv(".\\ratings.csv", sep=',', names=header)
     df = pd.read_csv(".\\u.data", sep="\t", names=header)
-    n_users = df.user_id.unique().shape[0]
-    n_items = df.item_id.unique().shape[0]
-    print 'Number of users = ' + str(n_users) + ' | Number of movies = ' + str(n_items)
-
-    # 生成评分矩阵
-    data_matrix = np.zeros((n_users, n_items))
-    for line in df.itertuples():
-        data_matrix[line[1] - 1, line[2] - 1] = line[3]
+    data_matrix = ratings_matrix(df)
     import time
 
+    # print "time.time(): %f " % time.time()
+    # dm = UserBasedCF(data_matrix)
+    # recommend_dict_all = dm.users_based_recommend(top=20)
+    # print "time.time(): %f " % time.time()
+    # print recommend_dict_all.get(0, [])
+    # print "time.time(): %f " % time.time()
+    # dm = ItemBasedCF(data_matrix)
+    # recommend_dict_all = dm.items_based_recommend(top=20)
+    # print recommend_dict_all.get(0, [])
+    # print "time.time(): %f " % time.time()
     print "time.time(): %f " % time.time()
-    dm = UserBasedCF(data_matrix)
-    recommend_dict_all = dm.users_based_recommend(top=20)
-    print "time.time(): %f " % time.time()
-    print recommend_dict_all.get(0, [])
-    print "time.time(): %f " % time.time()
-    dm = ItemBasedCF(data_matrix)
-    recommend_dict_all = dm.items_based_recommend(top=20)
-    print recommend_dict_all.get(0, [])
-    print "time.time(): %f " % time.time()
+    dm = ModelCF(data_matrix)
+    # pred = dm.ALS(10)
+    pred = dm.SVD_EM(K=10)
+    mask = data_matrix > 0
+    mask[mask == True] = 1
+    mask[mask == False] = 0
+    err = np.sum((mask * (data_matrix - pred) ** 2))
+    print err
+    # for x in xrange(len(pred)):
+    #     print pred[x]
