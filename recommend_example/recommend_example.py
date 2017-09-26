@@ -71,8 +71,10 @@ def rmse(prediction, ground_truth):
 
 class Main():
     def __init__(self):
-        os.chdir("D:\\work\\liujm\\2017\\9\\20170911\\ml-100k")
+        # os.chdir("D:\\work\\liujm\\2017\\9\\20170919\\ml-20m\\ml-20m")
+        os.chdir("D:\\work\\liujm\\2017\\9\\20170911\\ml-100k\\ml-100k")
         header = ['user_id', 'item_id', 'rating', 'timestamp']
+        # df = pd.read_csv(".\\ml-100k\u.data", sep="\t", names=header)
         df = pd.read_csv(".\\ml-100k\u.data", sep="\t", names=header)
         n_users = df.user_id.unique().shape[0]
         n_items = df.item_id.unique().shape[0]
