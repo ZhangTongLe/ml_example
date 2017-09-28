@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 import collections
 import copy
+import time
 from scipy.stats import pearsonr
 from sklearn.metrics import pairwise
 from scipy.spatial.distance import cosine
@@ -258,6 +259,54 @@ class ItemBasedCF(object):
         return recommend_dict_all
 
 
+class SlopeOne(object):
+    """
+    Description : 最简单的基于商品的协同过滤
+    """
+
+    def __init__(self, data):
+        self.n_users = len(data)
+        self.n_items = len(data[0])
+        self.difmatrix = np.zeros((self.n_items, self.n_items))
+        self.nratings = np.zeros((self.n_items, self.n_items))
+        self.data = data
+
+    def build_matrix(self):
+        """
+        Description: 建立相似性矩阵
+        :return:
+        """
+
+        n_items = self.n_items
+        n_users = self.n_users
+        for i in xrange(n_items):
+            for j in xrange(i + 1, n_items):
+                n_counts = 0
+                diff = 0
+                for k in xrange(n_users):
+                    if self.data[k, i] > 0 and self.data[k, j]:
+                        n_counts += 1
+                        diff += (self.data[k, i] - self.data[k, j])
+                self.difmatrix[i, j] = (diff + 1) / (n_counts + 1)
+                self.difmatrix[j, i] = self.difmatrix[i, j]
+                self.nratings[i, j] = n_counts
+                self.nratings[j, i] = self.nratings[i, j]
+
+    def slop_one_recommend(self, K=20):
+        """
+        Description: 商品推荐
+        :param K:
+        :return:
+        """
+        self.build_matrix()
+        pred = np.zeros((self.n_users, self.n_items))
+        for u in xrange(self.n_users):
+            for m in xrange(self.n_items):
+                if self.data[u, m] == 0:
+                    pred[u, m] = np.dot(self.data[u] + self.difmatrix[m], self.nratings[m]) / self.nratings[m].sum()
+        return pred
+
+
 class ModelCF(object):
     """
     Description: 基于模型的协同过滤
@@ -435,9 +484,219 @@ class ModelCF(object):
         return np.round(R_tmp, 0)
 
 
-class Main():
-    def __init__(self):
-        pass
+class CBF(object):
+    """
+    Descrption:从描述商品的数中抽取用户特征
+    Content-based Filtering 基于内容的过滤
+    """
+
+    def __init__(self, data, movies):
+        self.ratings_matrix = data.astype('float')
+        self.n_features = len(movies[0])
+        self.movies = movies
+
+    def CBF_Average(self):
+        mean_user_rating = self.ratings_matrix.mean(axis=1, dtype=float)
+        ratings_diff = self.ratings_matrix - mean_user_rating[:, np.newaxis]
+        V = np.dot(ratings_diff, self.movies) / self.movies.sum(axis=0, dtype=float)[np.newaxis]
+        pred = np.dot(V, self.movies.T)
+        return pred
+
+    def CBF_regression(self, alpha=0.01, l=0.0001, its=50, tol=0.001):
+        n_features = self.n_features + 1
+        n_users = len(self.ratings_matrix)
+        n_items = len(self.ratings_matrix[0])
+        movies_feats = np.ones((n_items, n_features))
+        movies_feats[:, 1:] = self.movies
+        movies_feats = movies_feats.astype('float')
+
+        p_matrix = np.random.rand(n_users, n_features)
+        p_matrix[:, 0] = 1.
+        err = 0
+        cost = -1
+        for it in xrange(its):
+            print 'it:', it, ' -- ', cost
+            for u in xrange(n_users):
+                for f in xrange(n_features):
+                    if f == 0:
+                        for m in xrange(n_items):
+                            if self.ratings_matrix[u, m] > 0:
+                                diff = np.dot(p_matrix[u], movies_feats[m]) - self.ratings_matrix[u, m]
+                                p_matrix[u, f] += - alpha * (diff * movies_feats[m][f])
+                    else:
+                        for m in xrange(n_items):
+                            if self.ratings_matrix[u, m] > 0:
+                                diff = np.dot(p_matrix[u], movies_feats[m]) - self.ratings_matrix[u, m]
+                                p_matrix[u, f] += -alpha * (diff * movies_feats[m][f]) + l * p_matrix[u, f]
+            cost = 0
+            for u in xrange(n_users):
+                for m in xrange(n_items):
+                    if self.ratings_matrix[u][m] > 0:
+                        cost += 0.5 * pow(self.ratings_matrix[u, m] - np.dot(p_matrix[u], movies_feats[m]), 2)
+                for f in xrange(1, n_features):
+                    cost += float(1 / 2.0) * pow(p_matrix[u][f], 2)
+            print 'err', cost
+            if cost < tol:
+                print 'err', cost
+                break
+        return np.dot(p_matrix, movies_feats)
+
+
+class AssociationRules(object):
+    """
+    Description: 关联规则
+    """
+
+    def __init__(self, Umatrix, Movieslist, min_support=0.1, min_confidence=0.1, likethreshold=3):
+        """
+        Description: 关联规则初始化
+        :param Umatrix: 评分矩阵
+        :param Movieslist: 电影列表
+        :param min_support: 支持度
+        :param min_confidence: 置信度
+        :param likethreshold: 下限的过滤分数
+        """
+        self.min_support = min_support  # 支持度
+        self.min_confidence = min_confidence  # 置信度
+        self.Movieslist = Movieslist  # 电影清单
+        n_items = len(Umatrix[0])
+        transactions = []  # 项集
+        for u in Umatrix:
+            # 评分>likethreshold  才能构成项集
+            s = [i for i in xrange(len(u)) if u[i] > likethreshold]
+            if len(s) > 0:
+                transactions.append(s)
+        # 将所有的item展开成一行
+        flat = [item for sublist in transactions for item in sublist]
+        # 初始化的items
+        inititems = map(frozenset, [[item] for item in frozenset(flat)])
+        # 将项集转化成无需集合
+        set_trans = map(set, transactions)
+        # 过滤出在关联规则组合中出现的元素
+        sets_init, self.dict_sets_support = self.filterSet(set_trans, inititems)
+        # 推荐系统只需要两项关联规则
+        setlen = 2
+        # 构建所有可能出现的组合
+        items_temp = self.combine_lists(sets_init, setlen)
+        # 过滤出所有的频繁集和支持度
+        self.freq_sets, sup_tmp = self.filterSet(set_trans, items_temp)
+        # 更新支持度集合
+        self.dict_sets_support.update(sup_tmp)
+        # 关联规则置信度矩阵初始化
+        self.ass_matrix = np.zeros((n_items, n_items))
+        # 构建关联规则置信度矩阵，遍历频繁集
+        for freqset in self.freq_sets:
+            list_setitems = [frozenset([item]) for item in freqset]
+            self.calc_confidence_matrix(freqset, list_setitems)
+
+    def filterSet(self, set_trans, likeditems):
+        """
+        Description: 过滤出组合中出现的元素
+        :param set_trans: 给定的项集
+        :param likeditems: 所有的元素
+        :return:
+        """
+        itemscnt = {}
+        # 遍历给定同时出现的项集
+        for id in set_trans:
+            # 遍历所有可能的元素
+            for item in likeditems:
+                # 如果某一个元素出现在某一个项里面
+                if item.issubset(id):
+                    # 统计元素出现的次数
+                    itemscnt.setdefault(item, 0)
+                    itemscnt[item] += 1
+        # 计算多少个项集合
+        num_items = float(len(set_trans))
+        # 频繁集
+        freq_sets = []
+        # 支持度集
+        dict_sets = {}
+        # 遍历每个元素出现的次数
+        for key in itemscnt:
+            # 计算key 对应的支持度
+            support = itemscnt[key] / num_items
+            if support >= self.min_support:  # 如果支持度大于设定的支持度
+                freq_sets.insert(0, key)
+            # 插入支持度
+            dict_sets[key] = support
+        return freq_sets, dict_sets
+
+    def combine_lists(self, freq_sets, setlen):
+        """
+        Description: 寻找所有的可能, 当setlen=2，寻找可能同时出现的两个商品组合
+        :param freq_sets: 遍历的商品组合，setlen=2 的时候，就是单个元素集合
+        :param setlen: 可能的组合长度
+        :return:
+        """
+        set_items_list = []
+        n_sets = len(freq_sets)
+        for i in xrange(n_sets):
+            for j in xrange(i + 1, n_sets):
+                set_list1 = list(freq_sets[i])[:setlen - 2]
+                set_list2 = list(freq_sets[j])[:setlen - 2]
+                if set(set_list1) == set(set_list2):
+                    # 计算并集 union
+                    set_items_list.append(freq_sets[i].union(freq_sets[j]))
+        return set_items_list
+
+    def calc_confidence_matrix(self, freqset, list_setitems):
+        """
+        Description: 计算相似性矩阵
+        :param freqset: 某一项频繁集
+        :param list_setitems: 频繁集内部的单个元素项的列表
+        :return:
+        """
+        # 遍历推荐的商品(traget:目标)
+        for target in list_setitems:
+            # self.dict_sets_support[freqset]同时出现的项集的支持度
+            # self.dict_sets_support[freqset - target] 已经打分的项集的支持度
+            # 计算基于已经打分的商品的支持度下，推荐商品的置信度
+            confidence = self.dict_sets_support[freqset] / self.dict_sets_support[freqset - target]
+            # 大于最低的置信度
+            if confidence > self.min_confidence:
+                self.ass_matrix[list(freqset)[0]][list(target)[0]] = confidence
+
+    def GetRecItems(self, u_vec, indxs=False):
+        """
+        Description: 计算某个向量的推荐的商品列表
+        :param u_vec: 给定的用户
+        :param indxs: false过滤掉已经看过的商品
+        :return:
+        """
+        vec_recs = np.dot(u_vec, self.ass_matrix)
+        sortedweight = np.argsort(vec_recs)
+        seenindxs = [indx for indx in xrange(len(u_vec)) if u_vec[indx] > 0]
+        seenmovies = np.array(self.Movieslist)
+
+        recitems = np.array(self.Movieslist)[sortedweight]
+        recitems = [m for m in recitems if m in seenmovies]
+        if indxs:
+            vec_recs[seenindxs] = -1
+            recsvec = np.argsort(vec_recs)[::-1][np.argsort(vec_recs) > 0]
+            return recsvec
+        return recitems[::-1]
+
+
+class Main:
+    def __init__(self, data_matrix):
+        self.data_matrix = data_matrix
+
+    def test_model(self):
+        dm = ModelCF(self.data_matrix)
+        pred = dm.SVD_EM(K=10)
+        mask = data_matrix > 0
+        mask[mask == True] = 1
+        mask[mask == False] = 0
+        err = np.sum((mask * (self.data_matrix - pred) ** 2))
+        print err
+
+    def test_cf(self):
+        print "time.time(): %f " % time.time()
+        dm = UserBasedCF(self.data_matrix)
+        recommend_dict_all = dm.users_based_recommend(top=20)
+        print recommend_dict.get(0, [])
+        print "time.time(): %f " % time.time()
 
 
 if __name__ == '__main__':
@@ -450,26 +709,67 @@ if __name__ == '__main__':
     # df = pd.read_csv(".\\ratings.csv", sep=',', names=header)
     df = pd.read_csv(".\\u.data", sep="\t", names=header)
     data_matrix = ratings_matrix(df)
-    import time
 
-    # print "time.time(): %f " % time.time()
-    # dm = UserBasedCF(data_matrix)
-    # recommend_dict_all = dm.users_based_recommend(top=20)
-    # print "time.time(): %f " % time.time()
-    # print recommend_dict_all.get(0, [])
-    # print "time.time(): %f " % time.time()
-    # dm = ItemBasedCF(data_matrix)
-    # recommend_dict_all = dm.items_based_recommend(top=20)
-    # print recommend_dict_all.get(0, [])
-    # print "time.time(): %f " % time.time()
-    print "time.time(): %f " % time.time()
-    dm = ModelCF(data_matrix)
-    # pred = dm.ALS(10)
-    pred = dm.SVD_EM(K=10)
-    mask = data_matrix > 0
-    mask[mask == True] = 1
-    mask[mask == False] = 0
-    err = np.sum((mask * (data_matrix - pred) ** 2))
-    print err
-    # for x in xrange(len(pred)):
-    #     print pred[x]
+    # df_info_header = ['movie_id', 'movie title', 'release date', 'video release date', 'IMDb URL', 'unknown', 'Action',
+    #                   'Adventure', 'Animation', 'Children\'s', 'Comedy', 'Crime', 'Documentary', 'Drama', 'Fantasy',
+    #                   'Film-Noir', 'Horror', 'Musical', 'Mystery', 'Romance', 'Sci-Fi', 'Thriller', 'War', 'Western']
+    #
+    # df_info = pd.read_csv('.\\u.item', sep='|', names=df_info_header)
+    #
+    # moviescats = ['unknown', 'Action', 'Adventure', 'Animation', 'Children\'s', 'Comedy', 'Crime', 'Documentary',
+    #               'Drama', 'Fantasy', 'Film-Noir', 'Horror', 'Musical', 'Mystery',
+    #               'Romance', 'Sci-Fi', 'Thriller', 'War', 'Western']
+    # dfout_movies = pd.DataFrame(columns=['movie_id'] + moviescats)
+    # startcatsindx = 5
+    #
+    # # matrix movies's content
+    # cnt = 0
+    # movies_list = df_info.movie_id.unique()
+    # n_movies = len(movies_list)
+    # n_features = len(moviescats)
+    # content_matrix = np.zeros((n_movies, n_features))
+    # for x in xrange(n_movies):
+    #     content_matrix[x] = df_info.iloc[x][startcatsindx:].tolist()
+    #
+    # print content_matrix.shape
+    #
+    # cbf = CBF(data_matrix, content_matrix)
+    # pred = cbf.CBF_regression()
+    # # keys = [x for x in xrange(n_movies)]
+    #
+    # items_idx = np.argsort(pred[1])[::-1]
+    # recommend_dict = dict()
+    # cnt = 0
+    # top = 10
+    # for i in items_idx:
+    #     if data_matrix[1, i] == 0 and cnt < top:
+    #         recommend_dict[i + 1] = pred[1, i]
+    #         cnt += 1
+    #     elif cnt == top:
+    #         break
+    # # recommend_dict_all[u] = recommend_dict
+    # print recommend_dict
+
+    so = SlopeOne(data_matrix)
+    pred = so.slop_one_recommend()
+    # keys = [x for x in xrange(n_movies)]
+
+    items_idx = np.argsort(pred[1])[::-1]
+    recommend_dict = dict()
+    cnt = 0
+    top = 10
+    for i in items_idx:
+        if data_matrix[1, i] == 0 and cnt < top:
+            recommend_dict[i + 1] = pred[1, i]
+            cnt += 1
+        elif cnt == top:
+            break
+    # recommend_dict_all[u] = recommend_dict
+    print recommend_dict
+
+
+    # mask = data_matrix > 0
+    # mask[mask == True] = 1
+    # mask[mask == False] = 0
+    # err = np.sum((mask * (data_matrix - pred) ** 2))
+    # print err
