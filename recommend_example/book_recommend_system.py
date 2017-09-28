@@ -78,7 +78,7 @@ def ratings_matrix(dataframe):
 
     # 生成评分矩阵
     data_matrix = np.zeros((n_users, n_items))
-    for line in df.itertuples():
+    for line in dataframe.itertuples():
         data_matrix[line[1] - 1, line[2] - 1] = line[3]
 
     return data_matrix
@@ -678,14 +678,194 @@ class AssociationRules(object):
         return recitems[::-1]
 
 
+class Hybrid_cbf_cf(object):
+    """
+    Description: 组合协同过滤和基于内容过滤，将内容的平均分特征补充到效用矩阵里面
+    """
+
+    def __init__(self, Movies, Movieslist, Umatrix):
+        """
+        Description: 构造器生成新的效用矩阵，为每位用户增加了他为每种类型的电影打的平均分特征
+        :param Movies: 商品的特征矩阵
+        :param Movieslist: 商品的list
+        :param Umatrix: 评分矩阵
+        """
+        self.n_features = len(Movies[0])  # 商品特征
+        self.Movielist = Movieslist  # 商品列表
+        self.Movies = Movies.astype(float)
+        self.Umatrix = Umatrix  # 评分矩阵
+        # 初始化新的效用矩阵
+        self.Umatrix_mfeats = np.zeros((len(Umatrix), len(Umatrix[0]) + self.n_features))
+        # 计算用户的平均分
+        mean_user_rating = Umatrix.sum(axis=1, dtype=float) / np.count_nonzero(Umatrix, axis=1)
+        # 用户评分减去平均分
+        diffs = Umatrix - mean_user_rating[:, np.newaxis]
+        diffs[diffs == (-mean_user_rating[:, np.newaxis])] = 0
+        # 将用户评分放到了新的效用矩阵里
+        self.Umatrix_mfeats[:, :len(Umatrix[0])] = diffs
+        self.n_movies = len(Movies)
+        # 循环每个用户将用户每种类型的平均分也放到新的效用矩阵中
+        for u in xrange(len(Umatrix)):
+            u_vec = Umatrix[u]
+            self.Umatrix_mfeats[u, len(Umatrix[0]):] = self.GetUserItemFeatures(u_vec)
+
+    def GetUserItemFeatures(self, u_vec):
+        """
+        Description: 获取每个用户的类型平均分
+        :param u_vec: 用户向量
+        :return:
+        """
+        # 计算每个用户的平均分
+        mean_u = u_vec[u_vec > 0].mean()
+        # 计算每个用户的偏差分
+        diff_u = u_vec - mean_u
+        features_u = np.zeros(self.n_features).astype(float)
+        cnts = np.zeros(self.n_features)
+        for m in xrange(self.n_movies):
+            if u_vec[m] > 0:
+                # 计算特征加权分数
+                features_u += self.Movies[m] * diff_u[m]
+                cnts += self.Movies[m]
+        for m in xrange(0, self.n_features):
+            # 计算平均分
+            if cnts[m] > 0:
+                features_u[m] = features_u[m] / cnts[m]
+        return features_u
+
+    def CalcRatings(self, type='cosine', top=10):
+        """
+        Description: 计算预测矩阵，并进行推荐
+        :param type:
+        :return:
+        """
+        # 计算了整个矩阵相关性矩阵
+        user_mfeats_similarity = matrix_sim(self.Umatrix_mfeats, type)
+        # 计算偏差值矩阵
+        mean_user_rating = self.Umatrix.sum(axis=1, dtype=float) / np.count_nonzero(self.Umatrix, axis=1)
+        rating_diff = self.Umatrix - mean_user_rating[:, np.newaxis]
+        rating_diff[rating_diff == (-mean_user_rating[:, np.newaxis])] = 0
+        # 计算预测值矩阵
+        pred = mean_user_rating[:, np.newaxis] + user_mfeats_similarity.dot(
+            rating_diff) / np.array([np.abs(user_mfeats_similarity).sum(axis=1)]).T
+        pred[pred > 5] = 5
+        pred[pred < 0] = 0
+        # 推荐商品
+        recommend_dict_all = dict()
+        for u in xrange(len(self.Umatrix)):
+            items_idx = np.argsort(pred[u])[::-1]
+            recommend_dict = dict()
+            cnt = 0
+            for i in items_idx:
+                if self.Umatrix[u, i] == 0 and cnt < top:
+                    recommend_dict[i + 1] = pred[u, i]
+                    cnt += 1
+                elif cnt == top:
+                    break
+            recommend_dict_all[u] = recommend_dict
+
+        print "max:", pred.max()
+        return recommend_dict_all
+
+
+class Hybird_svd(object):
+    """
+    Description: 混合方法,将svd生成的特征和评分矩阵组合起来
+    """
+
+    def __init__(self, Moives, Movieslist, Umatrix, K, inp):
+        from sklearn.decomposition import TruncatedSVD
+        self.n_features = len(Moives[0])
+        self.Movieslist = Movieslist
+        self.Movies = Moives.astype(float)
+        R_tmp = copy.copy(Umatrix)
+        R_tmp = R_tmp.astype(float)
+
+        if inp != 'none':
+            R_tmp = imputation(inp, Umatrix)
+        Umatrix_mfeats = np.zeros((len(Umatrix), len(Umatrix[0]) + self.n_features))
+        # 计算用户的平均分
+        mean_user_rating = Umatrix.sum(axis=1, dtype=float) / np.count_nonzero(Umatrix, axis=1)
+        # 用户评分减去平均分
+        diffs = R_tmp - mean_user_rating[:, np.newaxis]
+        diffs[diffs == (-mean_user_rating[:, np.newaxis])] = 0
+        self.n_movies = len(Moives)
+        Umatrix_mfeats[:, :len(Umatrix[0])] = diffs
+
+        # 循环每个用户将用户每种类型的平均分也放到新的效用矩阵中
+        for u in xrange(len(Umatrix)):
+            u_vec = Umatrix[u]
+            Umatrix_mfeats[u, len(Umatrix[0]):] = self.GetUserItemFeatures(u_vec)
+
+        svd = TruncatedSVD(n_components=K, random_state=4)
+        R_k = svd.fit_transform(Umatrix_mfeats)
+        R_tmp = mean_user_rating[:, np.newaxis] + svd.inverse_transform(R_k)
+        self.matrix = np.round(R_tmp[:, :self.n_movies], 3)
+
+    def GetUserItemFeatures(self, u_vec):
+        """
+        Description: 获取每个用户的类型平均分
+        :param u_vec: 用户向量
+        :return:
+        """
+        # 计算每个用户的平均分
+        mean_u = u_vec[u_vec > 0].mean()
+        # 计算每个用户的偏差分
+        diff_u = u_vec - mean_u
+        features_u = np.zeros(self.n_features).astype(float)
+        cnts = np.zeros(self.n_features)
+        for m in xrange(self.n_movies):
+            if u_vec[m] > 0:
+                # 计算特征加权分数
+                features_u += self.Movies[m] * diff_u[m]
+                cnts += self.Movies[m]
+        for m in xrange(0, self.n_features):
+            # 计算平均分
+            if cnts[m] > 0:
+                features_u[m] = features_u[m] / cnts[m]
+        return features_u
+
+
 class Main:
-    def __init__(self, data_matrix):
+    def __init__(self):
+        import os
+        os.chdir("D:\\work\\liujm\\2017\\9\\20170911\\ml-100k\\ml-100k")
+        # os.chdir("D:\\work\\liujm\\2017\\9\\20170919\\ml-20m\\ml-20m")
+        header = ['user_id', 'item_id', 'rating', 'timestamp']
+        # df = pd.read_csv(".\\ml-100k\u.data", sep="\t", names=header)
+        # df = pd.read_csv(".\\ratings.csv", sep=',', names=header)
+        df = pd.read_csv(".\\u.data", sep="\t", names=header)
+        data_matrix = ratings_matrix(df)
         self.data_matrix = data_matrix
+        df_info_header = ['movie_id', 'movie title', 'release date', 'video release date', 'IMDb URL', 'unknown',
+                          'Action',
+                          'Adventure', 'Animation', 'Children\'s', 'Comedy', 'Crime', 'Documentary', 'Drama', 'Fantasy',
+                          'Film-Noir', 'Horror', 'Musical', 'Mystery', 'Romance', 'Sci-Fi', 'Thriller', 'War',
+                          'Western']
+
+        df_info = pd.read_csv('.\\u.item', sep='|', names=df_info_header)
+
+        moviescats = ['unknown', 'Action', 'Adventure', 'Animation', 'Children\'s', 'Comedy', 'Crime', 'Documentary',
+                      'Drama', 'Fantasy', 'Film-Noir', 'Horror', 'Musical', 'Mystery',
+                      'Romance', 'Sci-Fi', 'Thriller', 'War', 'Western']
+        dfout_movies = pd.DataFrame(columns=['movie_id'] + moviescats)
+        startcatsindx = 5
+
+        # matrix movies's content
+        cnt = 0
+        movies_list = df_info.movie_id.unique()
+        n_movies = len(movies_list)
+        n_features = len(moviescats)
+        content_matrix = np.zeros((n_movies, n_features))
+        for x in xrange(n_movies):
+            content_matrix[x] = df_info.iloc[x][startcatsindx:].tolist()
+
+        self.content_matrix = content_matrix
+        self.movies_list = movies_list
 
     def test_model(self):
         dm = ModelCF(self.data_matrix)
         pred = dm.SVD_EM(K=10)
-        mask = data_matrix > 0
+        mask = self.data_matrix > 0
         mask[mask == True] = 1
         mask[mask == False] = 0
         err = np.sum((mask * (self.data_matrix - pred) ** 2))
@@ -695,81 +875,62 @@ class Main:
         print "time.time(): %f " % time.time()
         dm = UserBasedCF(self.data_matrix)
         recommend_dict_all = dm.users_based_recommend(top=20)
-        print recommend_dict.get(0, [])
+        print recommend_dict_all.get(0, [])
         print "time.time(): %f " % time.time()
+
+    def test_cbf(self):
+        cbf = CBF(self.data_matrix, self.content_matrix)
+        pred = cbf.CBF_regression()
+        # keys = [x for x in xrange(n_movies)]
+
+        items_idx = np.argsort(pred[1])[::-1]
+        recommend_dict = dict()
+        cnt = 0
+        top = 10
+        for i in items_idx:
+            if self.data_matrix[1, i] == 0 and cnt < top:
+                recommend_dict[i + 1] = pred[1, i]
+                cnt += 1
+            elif cnt == top:
+                break
+        # recommend_dict_all[u] = recommend_dict
+        print recommend_dict
+
+    def test_slopone(self):
+        so = SlopeOne(self.data_matrix)
+        pred = so.slop_one_recommend()
+        # keys = [x for x in xrange(n_movies)]
+
+        items_idx = np.argsort(pred[1])[::-1]
+        recommend_dict = dict()
+        cnt = 0
+        top = 10
+        for i in items_idx:
+            if self.data_matrix[1, i] == 0 and cnt < top:
+                recommend_dict[i + 1] = pred[1, i]
+                cnt += 1
+            elif cnt == top:
+                break
+        # recommend_dict_all[u] = recommend_dict
+        print recommend_dict.get()
+
+    def test_Hybrid_cbf_cf(self):
+        h_cbf_cf = Hybrid_cbf_cf(self.content_matrix, self.movies_list, self.data_matrix)
+        recommend_dict_all = h_cbf_cf.CalcRatings()
+        print recommend_dict_all.get(0, [])
+
+    def test_AssociationRules(self):
+        ass = AssociationRules(self.data_matrix, self.movies_list)
+        movie_list = ass.GetRecItems(self.data_matrix[0])
+        print min(movie_list)
+        # print movie_list
+        print len(movie_list)
+
+    def test_Hybird_svd(self):
+        h_svd = Hybird_svd(self.content_matrix, self.movies_list, self.data_matrix, 10, 'none')
+        print h_svd.matrix[0]
 
 
 if __name__ == '__main__':
-    import os
-
-    os.chdir("D:\\work\\liujm\\2017\\9\\20170911\\ml-100k\\ml-100k")
-    # os.chdir("D:\\work\\liujm\\2017\\9\\20170919\\ml-20m\\ml-20m")
-    header = ['user_id', 'item_id', 'rating', 'timestamp']
-    # df = pd.read_csv(".\\ml-100k\u.data", sep="\t", names=header)
-    # df = pd.read_csv(".\\ratings.csv", sep=',', names=header)
-    df = pd.read_csv(".\\u.data", sep="\t", names=header)
-    data_matrix = ratings_matrix(df)
-
-    # df_info_header = ['movie_id', 'movie title', 'release date', 'video release date', 'IMDb URL', 'unknown', 'Action',
-    #                   'Adventure', 'Animation', 'Children\'s', 'Comedy', 'Crime', 'Documentary', 'Drama', 'Fantasy',
-    #                   'Film-Noir', 'Horror', 'Musical', 'Mystery', 'Romance', 'Sci-Fi', 'Thriller', 'War', 'Western']
-    #
-    # df_info = pd.read_csv('.\\u.item', sep='|', names=df_info_header)
-    #
-    # moviescats = ['unknown', 'Action', 'Adventure', 'Animation', 'Children\'s', 'Comedy', 'Crime', 'Documentary',
-    #               'Drama', 'Fantasy', 'Film-Noir', 'Horror', 'Musical', 'Mystery',
-    #               'Romance', 'Sci-Fi', 'Thriller', 'War', 'Western']
-    # dfout_movies = pd.DataFrame(columns=['movie_id'] + moviescats)
-    # startcatsindx = 5
-    #
-    # # matrix movies's content
-    # cnt = 0
-    # movies_list = df_info.movie_id.unique()
-    # n_movies = len(movies_list)
-    # n_features = len(moviescats)
-    # content_matrix = np.zeros((n_movies, n_features))
-    # for x in xrange(n_movies):
-    #     content_matrix[x] = df_info.iloc[x][startcatsindx:].tolist()
-    #
-    # print content_matrix.shape
-    #
-    # cbf = CBF(data_matrix, content_matrix)
-    # pred = cbf.CBF_regression()
-    # # keys = [x for x in xrange(n_movies)]
-    #
-    # items_idx = np.argsort(pred[1])[::-1]
-    # recommend_dict = dict()
-    # cnt = 0
-    # top = 10
-    # for i in items_idx:
-    #     if data_matrix[1, i] == 0 and cnt < top:
-    #         recommend_dict[i + 1] = pred[1, i]
-    #         cnt += 1
-    #     elif cnt == top:
-    #         break
-    # # recommend_dict_all[u] = recommend_dict
-    # print recommend_dict
-
-    so = SlopeOne(data_matrix)
-    pred = so.slop_one_recommend()
-    # keys = [x for x in xrange(n_movies)]
-
-    items_idx = np.argsort(pred[1])[::-1]
-    recommend_dict = dict()
-    cnt = 0
-    top = 10
-    for i in items_idx:
-        if data_matrix[1, i] == 0 and cnt < top:
-            recommend_dict[i + 1] = pred[1, i]
-            cnt += 1
-        elif cnt == top:
-            break
-    # recommend_dict_all[u] = recommend_dict
-    print recommend_dict
-
-
-    # mask = data_matrix > 0
-    # mask[mask == True] = 1
-    # mask[mask == False] = 0
-    # err = np.sum((mask * (data_matrix - pred) ** 2))
-    # print err
+    test = Main()
+    test.test_Hybird_svd()
