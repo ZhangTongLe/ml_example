@@ -12,58 +12,11 @@
 """
 import numpy as np
 import pandas as pd
-import collections
 import copy
 import time
 from scipy.stats import pearsonr
 from sklearn.metrics import pairwise
 from scipy.spatial.distance import cosine
-
-
-def process_data():
-    """
-    Descrption:将数据转化成效用矩阵,去除掉不超过min_ratings个人评论的商品
-    :return:
-    """
-    path = "D:\\work\\liujm\\2017\\9\\20170911\\ml-100k\\ml-100k\\u.data"
-    save_path = "D:\\work\\recommend_system\\utilitymatrix.csv"
-    df = pd.read_csv(path, sep='\t', header=None)
-    df_info = pd.read_csv("D:\\work\\liujm\\2017\\9\\20170911\\ml-100k\\ml-100k\\u.item", sep="|", header=None)
-    movie_list = [df_info[1].tolist()[idx] + ";" + str(idx + 1) for idx in xrange(len(df_info[1].tolist()))]
-
-    min_ratings = 50
-    n_users = len(df[0].drop_duplicates().tolist())
-    n_movies = len(movie_list)
-    movies_rated = list(df[1])
-    counts = collections.Counter(movies_rated)
-    dfout = pd.DataFrame(columns=['user'] + movie_list)
-
-    tore_movie_list = []
-    for i in xrange(1, n_users):
-        tmp_movie_list = [0 for j in xrange(n_movies)]
-        df_tmp = df[df[0] == i]
-        for k in df_tmp.index:
-            if counts[df_tmp.ix[k][1]] >= min_ratings:
-                tmp_movie_list[df_tmp.ix[k][1] - 1] = df.ix[k][2]
-            else:
-                tore_movie_list.append(df.ix[k][1])
-
-        dfout.loc[i] = [i] + tmp_movie_list
-
-    tore_movie_list = list(set(tore_movie_list))
-    dfout.drop(dfout.columns[tore_movie_list], axis=1, inplace=True)
-
-    dfout.to_csv(save_path, index=None)
-
-
-def read_data(path="D:\\work\\recommend_system\\utilitymatrix.csv"):
-    """
-    Description：读取数据为pandas类型,并设定默认读取路径
-    :param path:
-    :return:
-    """
-    df = pd.read_csv(path)
-    return df
 
 
 def ratings_matrix(dataframe):
@@ -159,12 +112,11 @@ class UserBasedCF(object):
         :param data: 评分矩阵
         :param type: 相似性选型
         """
-
         self.data = data
-        self.user_similarity = matrix_sim(data, type=type)
         self.n_items = len(data[0])
         self.n_uers = len(data)
         self.K = K
+        self.user_similarity = matrix_sim(data, type=type)
 
     def user_neighs_modify_item_similarity(self):
         """
@@ -219,7 +171,7 @@ class ItemBasedCF(object):
         """
 
         self.data = data
-        self.item_similarity = matrix_sim(data.T, type=type)
+        self.item_similarity = matrix_sim(self.data.T, type=type)
         self.n_users = len(self.data)
         self.n_items = len(self.data[0])
         self.K = K
@@ -359,7 +311,7 @@ class ModelCF(object):
 
         return np.round(np.dot(P, Qt), 0)
 
-    def ALS(self, K, iterations=3, l=0.001, tol=0.001):
+    def ALS(self, K, iterations=10, l=0.001, tol=0.001):
         """
         Description: Alternating Least Square ALS 交替最小二乘法
         通常没有SGD/SVD精确,但是速度较快，易用于并行计算
@@ -376,8 +328,7 @@ class ModelCF(object):
         P = np.random.rand(n_rows, K)
         Q = np.random.rand(n_cols, K)
         Qt = Q.T
-        err = 0.
-        matrix = matrix.astype('float')
+        matrix = matrix.astype(float)
         mask = matrix > 0
         mask[mask == True] = 1
         mask[mask == False] = 0
@@ -391,14 +342,15 @@ class ModelCF(object):
                 Qt[:, i] = np.linalg.solve(np.dot(P.T, np.dot(np.diag(mask_i), P)) + l * np.eye(K),
                                            np.dot(P.T, np.dot(np.diag(mask_i), matrix[:, i])))
 
-            err = np.sum((mask * (matrix - np.dot(P, Qt))) ** 2)
+            err = np.sqrt(sum(pow(matrix[matrix > 0] - np.dot(P, Qt)[matrix > 0], 2)) / float(len(matrix[matrix > 0])))
+
             if err < tol:
                 break
-            print "第" + str(it + 1) + "迭代,cost:" + str(round(err, 0))
+            print "第" + str(it + 1) + "迭代,cost:" + str(err)
 
-        return np.round(np.dot(P, Qt), 0)
+        return np.round(np.dot(P, Qt), 3)
 
-    def NMF_alg(self, K, inp='none', l=0.001):
+    def NMF_alg(self, K, inp='useraverage', l=0.001):
         """
         Description: Non-negative Matrix Factorization 非负矩阵分解
         :param K: 特征维度
@@ -416,9 +368,9 @@ class ModelCF(object):
         nmf = NMF(n_components=K, alpha=l)
         P = nmf.fit_transform(R_tmp)
         R_tmp = np.dot(P, nmf.components_)
-        return R_tmp
+        return np.round(R_tmp, 3)
 
-    def SVD(self, K, inp='none'):
+    def SVD(self, K, inp='useraverage'):
         """
         Description: Singular Value Decomposition 奇异值分解
         :param K: 特征
@@ -427,6 +379,7 @@ class ModelCF(object):
         """
 
         from sklearn.decomposition import TruncatedSVD
+
         matrix = self.Umatirx
         R_tmp = copy.copy(matrix)
         R_tmp = R_tmp.astype(float)
@@ -441,9 +394,9 @@ class ModelCF(object):
         R_tmp = svd.inverse_transform(R_k)
         R_tmp = mean_user_rating[:, np.newaxis] + R_tmp
 
-        return np.round(R_tmp, 0)
+        return np.round(R_tmp, 3)
 
-    def SVD_EM(self, K, inp='none', iterations=1000, tol=0.001):
+    def SVD_EM(self, K, inp='useraverage', iterations=20, tol=0.001):
         """
         Description : SVD+最大期望算法
         :param K: 特征维数
@@ -470,18 +423,19 @@ class ModelCF(object):
             R_k = svd.fit_transform(R_tmp)
             R_tmp = svd.inverse_transform(R_k)
             # e-step and error evaluation
-            err = 0
+            err = np.sqrt(sum(pow(matrix[matrix > 0] - R_tmp[matrix > 0], 2)) / float(len(matrix[matrix > 0])))
             for i in xrange(n_rows):
                 for j in xrange(n_cols):
                     if matrix[i][j] > 0:
-                        err += pow(matrix[i][j] - R_tmp[i][j], 2)
                         R_tmp[i][j] = matrix[i][j]
 
-            print "第" + str(it + 1) + "迭代,cost:" + str(round(err, 0))
+            print "第" + str(it + 1) + "迭代,cost:" + str(err)
             if err < tol:
                 print it, 'tol reached'
                 break
-        return np.round(R_tmp, 0)
+        R_k = svd.fit_transform(R_tmp)
+        R_tmp = svd.inverse_transform(R_k)
+        return np.round(R_tmp, 3)
 
 
 class CBF(object):
@@ -502,7 +456,7 @@ class CBF(object):
         pred = np.dot(V, self.movies.T)
         return pred
 
-    def CBF_regression(self, alpha=0.01, l=0.0001, its=50, tol=0.001):
+    def CBF_regression(self, alpha=0.01, l=0.0001, its=10, tol=0.001):
         n_features = self.n_features + 1
         n_users = len(self.ratings_matrix)
         n_items = len(self.ratings_matrix[0])
@@ -512,7 +466,6 @@ class CBF(object):
 
         p_matrix = np.random.rand(n_users, n_features)
         p_matrix[:, 0] = 1.
-        err = 0
         cost = -1
         for it in xrange(its):
             print 'it:', it, ' -- ', cost
@@ -528,18 +481,15 @@ class CBF(object):
                             if self.ratings_matrix[u, m] > 0:
                                 diff = np.dot(p_matrix[u], movies_feats[m]) - self.ratings_matrix[u, m]
                                 p_matrix[u, f] += -alpha * (diff * movies_feats[m][f]) + l * p_matrix[u, f]
-            cost = 0
-            for u in xrange(n_users):
-                for m in xrange(n_items):
-                    if self.ratings_matrix[u][m] > 0:
-                        cost += 0.5 * pow(self.ratings_matrix[u, m] - np.dot(p_matrix[u], movies_feats[m]), 2)
-                for f in xrange(1, n_features):
-                    cost += float(1 / 2.0) * pow(p_matrix[u][f], 2)
+            preds = np.dot(p_matrix, movies_feats.T)
+            cost = np.sqrt(
+                sum(pow(self.ratings_matrix[self.ratings_matrix > 0] - preds[self.ratings_matrix > 0], 2)) / float(
+                    len(self.ratings_matrix[self.ratings_matrix > 0])))
             print 'err', cost
             if cost < tol:
                 print 'err', cost
                 break
-        return np.dot(p_matrix, movies_feats)
+        return np.dot(p_matrix, movies_feats.T)
 
 
 class AssociationRules(object):
@@ -763,8 +713,7 @@ class Hybrid_cbf_cf(object):
                     break
             recommend_dict_all[u] = recommend_dict
 
-        print "max:", pred.max()
-        return recommend_dict_all
+        return pred, recommend_dict_all
 
 
 class Hybird_svd(object):
@@ -772,7 +721,7 @@ class Hybird_svd(object):
     Description: 混合方法,将svd生成的特征和评分矩阵组合起来
     """
 
-    def __init__(self, Moives, Movieslist, Umatrix, K, inp):
+    def __init__(self, Moives, Movieslist, Umatrix, K, inp='useraverage'):
         from sklearn.decomposition import TruncatedSVD
         self.n_features = len(Moives[0])
         self.Movieslist = Movieslist
@@ -823,6 +772,242 @@ class Hybird_svd(object):
             if cnts[m] > 0:
                 features_u[m] = features_u[m] / cnts[m]
         return features_u
+
+
+def cross_validation(matrix, k):
+    """
+    Description: 交叉分训练集合测试集合，伪随机
+    :param df: dataframe
+    :param k: 交叉验证次数
+    :return:
+    """
+    val_num = int(len(matrix) / float(k))
+    print val_num
+    np_trains = []
+    np_vals = []
+    for i in xrange(k):
+        start_val = (k - i - 1) * val_num
+        end_val = start_val + val_num
+        np_trains.append(np.vstack([matrix[:start_val], matrix[end_val:]]))
+        np_vals.append(matrix[start_val:end_val])
+    return np_trains, np_vals
+
+
+def HideRandomRtings(u_vec, ratiovals=0.5):
+    """
+    Descripion: 随机隐藏半数电影的分数，以便预测他们的实际值
+    :param u_vec: 每个用户的分数向量
+    :param ratiovals: 隐藏评分的比例
+    :return:
+    """
+
+    import random
+    u_test = np.zeros(len(u_vec))  # 存储用于测试算法的实际分数
+    u_vals = np.zeros(len(u_vec))  # 存储预测值
+    cnt = 0
+    n_ratings = len(u_vec[u_vec > 0])
+    for i in xrange(len((u_vec))):
+        if u_vec[i] > 0:
+            if bool(random.getrandbits(1)) or cnt >= int(n_ratings * ratiovals):
+                u_test[i] = u_vec[i]
+            else:
+                cnt += 1
+                u_vals[i] = u_vec[i]
+    return u_test, u_vals
+
+
+class Evaluate(object):
+    """
+    Description: 评估,进行各个推荐算法的效果比较
+    """
+
+    def __init__(self):
+        """
+        Description: 数据处理
+        """
+
+        import os
+        os.chdir("D:\\work\\liujm\\2017\\9\\20170911\\ml-100k\\ml-100k")
+        # os.chdir("D:\\work\\liujm\\2017\\9\\20170919\\ml-20m\\ml-20m")
+        header = ['user_id', 'item_id', 'rating', 'timestamp']
+        # df = pd.read_csv(".\\ml-100k\u.data", sep="\t", names=header)
+        # df = pd.read_csv(".\\ratings.csv", sep=',', names=header)
+        df = pd.read_csv(".\\u.data", sep="\t", names=header)
+        data_matrix = ratings_matrix(df)
+        self.data_matrix = data_matrix
+        df_info_header = ['movie_id', 'movie title', 'release date', 'video release date', 'IMDb URL', 'unknown',
+                          'Action',
+                          'Adventure', 'Animation', 'Children\'s', 'Comedy', 'Crime', 'Documentary', 'Drama', 'Fantasy',
+                          'Film-Noir', 'Horror', 'Musical', 'Mystery', 'Romance', 'Sci-Fi', 'Thriller', 'War',
+                          'Western']
+
+        df_info = pd.read_csv('.\\u.item', sep='|', names=df_info_header)
+
+        moviescats = ['unknown', 'Action', 'Adventure', 'Animation', 'Children\'s', 'Comedy', 'Crime', 'Documentary',
+                      'Drama', 'Fantasy', 'Film-Noir', 'Horror', 'Musical', 'Mystery',
+                      'Romance', 'Sci-Fi', 'Thriller', 'War', 'Western']
+        dfout_movies = pd.DataFrame(columns=['movie_id'] + moviescats)
+        startcatsindx = 5
+
+        # matrix movies's content
+        cnt = 0
+        movies_list = df_info.movie_id.unique()
+        n_movies = len(movies_list)
+        n_features = len(moviescats)
+        content_matrix = np.zeros((n_movies, n_features))
+        for x in xrange(n_movies):
+            content_matrix[x] = df_info.iloc[x][startcatsindx:].tolist()
+
+        self.content_matrix = content_matrix
+        self.movies_list = movies_list
+
+        self.n_folds = 5
+        self.np_trains, self.np_vals = cross_validation(data_matrix, self.n_folds)
+        n_movies = len(data_matrix[0])
+        self.vals_vecs_folds = []
+        self.tests_vecs_folds = []
+        for i in xrange(self.n_folds):
+            u_vecs = self.np_vals[i]
+            v_tests = np.empty((0, n_movies), dtype=float)
+            vvals = np.empty((0, n_movies), dtype=float)
+            for u_vec in u_vecs:
+                u_test, u_vals = HideRandomRtings(u_vec)
+                vvals = np.vstack([vvals, u_vals])
+                v_tests = np.vstack([v_tests, u_test])
+            self.vals_vecs_folds.append(vvals)
+            self.tests_vecs_folds.append(v_tests)
+
+    def evaluate(self):
+        """
+        Description:评估评分推荐
+        :return:
+        """
+        err_itembased = 0.
+        cnt_itembased = 0
+        err_userbased = 0.
+        cnt_userbased = 0
+        err_slopeone = 0.
+        cnt_slopeone = 0
+        err_cbfcf = 0.
+        cnt_cbfcf = 0
+        rmse_itembased = []
+        rmse_userbased = []
+        for i in xrange(self.n_folds):
+            Umatrix = self.np_trains[i]
+            val_matrix = self.np_vals[i]
+
+            # 基于商品的协同过滤
+            cfitembased = ItemBasedCF(Umatrix)
+            cfitembased.item_neighs_modify_item_similarity()
+            preds_itembased = np.dot(val_matrix, cfitembased.item_similarity)
+            cnt_itembased = len(val_matrix[val_matrix > 0])
+            err_itembased = sum(pow(val_matrix[val_matrix > 0] - preds_itembased[val_matrix > 0], 2))
+            rmse_itembased.append(np.sqrt(err_itembased / float(cnt_itembased)))
+
+        # rmse_userbased_avg = sum(rmse_userbased) / float(len(rmse_userbased))
+        rmse_itembased_avg = sum(rmse_itembased) / float(len(rmse_itembased))
+        # print "rmse_userbased_avg:", rmse_userbased_avg
+        print cnt_itembased
+        print err_itembased
+        print "rmse_itembased_avg:", rmse_itembased_avg
+
+    def all_evaluate(self):
+        """
+        Description:整体评估所有的方法
+        :return:
+        """
+        # 基于用户推荐
+        cfitembased = ItemBasedCF(self.data_matrix)
+        cfitembased.item_neighs_modify_item_similarity()
+        preds_itembased = np.dot(self.data_matrix, cfitembased.item_similarity)
+        preds_itembased[preds_itembased > 5] = 5
+        preds_itembased[preds_itembased < 1] = 1
+        cnt_itembased = len(self.data_matrix[self.data_matrix > 0])
+        err_itembased = sum(pow(self.data_matrix[self.data_matrix > 0] - preds_itembased[self.data_matrix > 0], 2))
+        rmse_itembased = np.sqrt(err_itembased / float(cnt_itembased))
+
+        # 基于用户推荐
+        cfuserbased = UserBasedCF(self.data_matrix)
+        cfuserbased.user_neighs_modify_item_similarity()
+        preds_userbased = np.dot(cfuserbased.user_similarity, self.data_matrix)
+        preds_userbased[preds_userbased > 5] = 5
+        preds_userbased[preds_userbased < 1] = 1
+        cnt_userbased = len(self.data_matrix[self.data_matrix > 0])
+        err_userbased = sum(pow(self.data_matrix[self.data_matrix > 0] - preds_userbased[self.data_matrix > 0], 2))
+        rmse_userbased = np.sqrt(err_userbased / float(cnt_userbased))
+
+        # 基于模型推荐
+        modelcf = ModelCF(self.data_matrix)
+        preds_ALS = modelcf.ALS(10)
+        preds_userbased[preds_ALS > 5] = 5
+        preds_userbased[preds_ALS < 1] = 1
+        rmse_ALS = np.sqrt(
+            sum(pow(self.data_matrix[self.data_matrix > 0] - preds_ALS[self.data_matrix > 0], 2)) / float(
+                len(self.data_matrix[self.data_matrix > 0])))
+        preds_NMF = modelcf.NMF_alg(30)
+        preds_NMF[preds_NMF > 5] = 5
+        preds_NMF[preds_NMF < 1] = 1
+        rmse_NMF = np.sqrt(
+            sum(pow(self.data_matrix[self.data_matrix > 0] - preds_NMF[self.data_matrix > 0], 2)) / float(
+                len(self.data_matrix[self.data_matrix > 0])))
+
+        preds_SVD = modelcf.SVD(30)
+        preds_NMF[preds_SVD > 5] = 5
+        preds_NMF[preds_SVD < 1] = 1
+        rmse_SVD = np.sqrt(
+            sum(pow(self.data_matrix[self.data_matrix > 0] - preds_SVD[self.data_matrix > 0], 2)) / float(
+                len(self.data_matrix[self.data_matrix > 0])))
+        preds_SVD_EM = modelcf.SVD_EM(30)
+        preds_SVD_EM[preds_SVD_EM > 5] = 5
+        preds_SVD_EM[preds_SVD_EM < 1] = 1
+
+        rmse_SVD_EM = np.sqrt(
+            sum(pow(self.data_matrix[self.data_matrix > 0] - preds_SVD_EM[self.data_matrix > 0], 2)) / float(
+                len(self.data_matrix[self.data_matrix > 0])))
+
+        # 基于混合模型
+        hybird_svd = Hybird_svd(self.content_matrix, self.movies_list, self.data_matrix, 10)
+        preds_hybird_svd = hybird_svd.matrix
+        preds_hybird_svd[preds_hybird_svd > 5] = 5
+        preds_hybird_svd[preds_hybird_svd < 1] = 1
+
+        rmse_hybird_svd = np.sqrt(
+            sum(pow(self.data_matrix[self.data_matrix > 0] - preds_hybird_svd[self.data_matrix > 0], 2)) / float(
+                len(self.data_matrix[self.data_matrix > 0])))
+
+        hybrid_cbf_cf = Hybrid_cbf_cf(self.content_matrix, self.movies_list, self.data_matrix)
+        pred_hybrid_cbf_cf, recommend_dict_all = hybrid_cbf_cf.CalcRatings()
+        pred_hybrid_cbf_cf[pred_hybrid_cbf_cf > 5] = 5
+        pred_hybrid_cbf_cf[pred_hybrid_cbf_cf < 1] = 1
+        rmse_hybrid_cbf_cf = np.sqrt(
+            sum(pow(self.data_matrix[self.data_matrix > 0] - pred_hybrid_cbf_cf[self.data_matrix > 0], 2)) / float(
+                len(self.data_matrix[self.data_matrix > 0])))
+
+        # 基于内容
+        cbf = CBF(self.data_matrix, self.content_matrix)
+        pred_cbf_regression = cbf.CBF_regression()
+        pred_cbf_regression[pred_cbf_regression > 5] = 5
+        pred_cbf_regression[pred_cbf_regression < 1] = 1
+        rmse_pred_cbf_regression = np.sqrt(
+            sum(pow(self.data_matrix[self.data_matrix > 0] - pred_cbf_regression[self.data_matrix > 0], 2)) / float(
+                len(self.data_matrix[self.data_matrix > 0])))
+        pred_cbf_average = cbf.CBF_Average()
+        pred_cbf_average[pred_cbf_average > 5] = 5
+        pred_cbf_average[pred_cbf_average < 1] = 1
+        rmse_pred_cbf_average = np.sqrt(
+            sum(pow(self.data_matrix[self.data_matrix > 0] - pred_cbf_average[self.data_matrix > 0], 2)) / float(
+                len(self.data_matrix[self.data_matrix > 0])))
+
+        print "rmse_itembased", rmse_itembased
+        print "rmse_userbased:", rmse_userbased
+        print "rmse_ALS:", rmse_ALS
+        print "rmse_NMF:", rmse_NMF
+        print "rmse_SVD:", rmse_SVD
+        print "rmse_SVD_EM:", rmse_SVD_EM
+        print "rmse_hybird_svd:", rmse_hybird_svd
+        print "rmse_hybrid_cbf_cf:", rmse_hybrid_cbf_cf
+        print "rmse_pred_cbf_regression:", rmse_pred_cbf_regression
+        print "rmse_pred_cbf_average:", rmse_pred_cbf_average
 
 
 class Main:
@@ -932,5 +1117,7 @@ class Main:
 
 
 if __name__ == '__main__':
-    test = Main()
-    test.test_Hybird_svd()
+    # test = Main()
+    # test.test_Hybird_svd()
+    ev = Evaluate()
+    ev.all_evaluate()
