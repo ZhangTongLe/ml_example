@@ -117,6 +117,7 @@ class UserBasedCF(object):
         self.n_uers = len(data)
         self.K = K
         self.user_similarity = matrix_sim(data, type=type)
+        self.preds = np.empty((self.n_uers, self.n_items))
 
     def user_neighs_modify_item_similarity(self):
         """
@@ -132,33 +133,47 @@ class UserBasedCF(object):
                     user_neighs_similarity[i, j] = self.user_similarity[i, j]
         self.user_similarity = user_neighs_similarity
 
-    def users_based_recommend(self, top=10):
+    def CalcRatings(self):
         """
-
-        :param top:
+        Description: 计算预测矩阵
         :return:
         """
         if self.K != -1:
             self.user_neighs_modify_item_similarity()
         mean_user_rating = self.data.sum(axis=1, dtype=float) / np.count_nonzero(self.data, axis=1)
         rating_diff = self.data - mean_user_rating[:, np.newaxis]
-        pred = mean_user_rating[:, np.newaxis] + self.user_similarity.dot(
+        self.preds = mean_user_rating[:, np.newaxis] + self.user_similarity.dot(
             rating_diff) / np.array([np.abs(self.user_similarity).sum(axis=1)]).T
-        recommend_dict_all = dict()
-        for u in xrange(len(self.data)):
-            items_idx = np.argsort(pred[u])[::-1]
-            recommend_dict = dict()
-            cnt = 0
-            for i in items_idx:
-                if self.data[u, i] == 0 and cnt < top:
-                    recommend_dict[i + 1] = pred[u, i]
-                    cnt += 1
-                elif cnt == top:
-                    break
-            recommend_dict_all[u] = recommend_dict
 
-        print "max:", pred.max()
-        return recommend_dict_all
+    def user_based_user_recommend(self, u, top=10):
+        """
+        Description:获取某个用户的推荐列表
+        :param u:
+        :param top:
+        :return:
+        """
+        items_idx = np.argsort(self.preds[u])[::-1]
+        cnt = 0
+        vec_recs = []
+        for i in items_idx:
+            if self.data[u, i] == 0 and cnt < top:
+                vec_recs.append(i + 1)
+                cnt += 1
+            elif cnt == top:
+                break
+        return vec_recs
+
+    def user_based_users_recommend(self, top=10):
+        """
+        Description: 获取整个用户的推荐字典
+        :param top:
+        :return:
+        """
+        recommend_dict = dict()
+        for u in xrange(len(self.data)):
+            recommend_dict[u] = self.user_based_user_recommend(u, top)
+
+        return recommend_dict
 
 
 class ItemBasedCF(object):
@@ -175,10 +190,11 @@ class ItemBasedCF(object):
         self.n_users = len(self.data)
         self.n_items = len(self.data[0])
         self.K = K
+        self.preds = np.empty((self.n_users, self.n_items))
 
     def item_neighs_modify_item_similarity(self):
         """
-        Descrption:
+        Descrption: K 修改相似性矩阵，最相似的k个item保留相似性系数，其他设置为0
         :return:
         """
         item_neighs_similarity = np.zeros((self.n_items, self.n_items))
@@ -190,25 +206,45 @@ class ItemBasedCF(object):
                     item_neighs_similarity[i, j] = self.item_similarity[i, j]
         self.item_similarity = item_neighs_similarity
 
-    def items_based_recommend(self, top=10):
+    def CalcRatings(self):
+        """
+        Description: 计算矩阵分数
+        :return:
+        """
         if self.K != -1:
             self.item_neighs_modify_item_similarity()
-        pred = self.data.dot(self.item_similarity) / np.array([np.abs(self.item_similarity).sum(axis=1)])
-        recommend_dict_all = dict()
-        for u in xrange(len(self.data)):
-            items_idx = np.argsort(pred[u])[::-1]
-            recommend_dict = dict()
-            cnt = 0
-            for i in items_idx:
-                if self.data[u, i] == 0 and cnt < top:
-                    recommend_dict[i + 1] = pred[u, i]
-                    cnt += 1
-                elif cnt == top:
-                    break
-            recommend_dict_all[u] = recommend_dict
+        self.preds = self.data.dot(self.item_similarity) / np.array([np.abs(self.item_similarity).sum(axis=1)])
+        self.preds[self.preds > 5] = 5
+        self.preds[self.preds < 1] = 1
 
-        print "max:", pred.max()
-        return recommend_dict_all
+    def items_based_user_recommend(self, u, top=10):
+        """
+        Description: 获取某个用户推荐列表
+        :param u:
+        :param top:
+        :return:
+        """
+        items_idx = np.argsort(self.preds[u])[::-1]
+        cnt = 0
+        vec_recs = []
+        for i in items_idx:
+            if self.data[u, i] == 0 and cnt < top:
+                vec_recs.append(i + 1)
+                cnt += 1
+            elif cnt == top:
+                break
+        return vec_recs
+
+    def items_based_users_recommend(self, top=10):
+        """
+        Description: 获取所有用户的推荐字典
+        :param top:
+        :return:
+        """
+        recommend_dict = {}
+        for u in xrange(self.n_users):
+            recommend_dict[u] = self.items_based_user_recommend(u, top)
+        return recommend_dict
 
 
 class SlopeOne(object):
@@ -222,6 +258,7 @@ class SlopeOne(object):
         self.difmatrix = np.zeros((self.n_items, self.n_items))
         self.nratings = np.zeros((self.n_items, self.n_items))
         self.data = data
+        self.preds = np.empty((self.n_users, self.n_items))
 
     def build_matrix(self):
         """
@@ -244,19 +281,49 @@ class SlopeOne(object):
                 self.nratings[i, j] = n_counts
                 self.nratings[j, i] = self.nratings[i, j]
 
-    def slop_one_recommend(self, K=20):
+    def CalcRatings(self, K=20):
         """
-        Description: 商品推荐
+        Description: 计算评分矩阵
         :param K:
         :return:
         """
         self.build_matrix()
-        pred = np.zeros((self.n_users, self.n_items))
         for u in xrange(self.n_users):
             for m in xrange(self.n_items):
                 if self.data[u, m] == 0:
-                    pred[u, m] = np.dot(self.data[u] + self.difmatrix[m], self.nratings[m]) / self.nratings[m].sum()
-        return pred
+                    self.preds[u, m] = np.dot(self.data[u] + self.difmatrix[m], self.nratings[m]) / self.nratings[
+                        m].sum()
+        self.preds[self.preds > 5] = 5
+        self.preds[self.preds < 1] = 1
+
+    def slop_one_user_recommend(self, u, top=10):
+        """
+        Description: 获取某个用户推荐列表
+        :param u:
+        :param top:
+        :return:
+        """
+        items_idx = np.argsort(self.preds[u])[::-1]
+        cnt = 0
+        vec_recs = []
+        for i in items_idx:
+            if self.data[u, i] == 0 and cnt < top:
+                vec_recs.append(i + 1)
+                cnt += 1
+            elif cnt == top:
+                break
+        return vec_recs
+
+    def slop_one_users_recommend(self, top=10):
+        """
+        Description: 获取所有用户的推荐字典
+        :param top:
+        :return:
+        """
+        recommend_dict = {}
+        for u in xrange(self.n_users):
+            recommend_dict[u] = self.slop_one_user_recommend(u, top)
+        return recommend_dict
 
 
 class ModelCF(object):
@@ -489,7 +556,10 @@ class CBF(object):
             if cost < tol:
                 print 'err', cost
                 break
-        return np.dot(p_matrix, movies_feats.T)
+        preds = np.dot(p_matrix, movies_feats.T)
+        preds[preds > 5] = 5
+        preds[preds < 1] = 1
+        return preds
 
 
 class AssociationRules(object):
@@ -698,7 +768,7 @@ class Hybrid_cbf_cf(object):
         pred = mean_user_rating[:, np.newaxis] + user_mfeats_similarity.dot(
             rating_diff) / np.array([np.abs(user_mfeats_similarity).sum(axis=1)]).T
         pred[pred > 5] = 5
-        pred[pred < 0] = 0
+        pred[pred < 1] = 1
         # 推荐商品
         recommend_dict_all = dict()
         for u in xrange(len(self.Umatrix)):
@@ -749,6 +819,8 @@ class Hybird_svd(object):
         R_k = svd.fit_transform(Umatrix_mfeats)
         R_tmp = mean_user_rating[:, np.newaxis] + svd.inverse_transform(R_k)
         self.matrix = np.round(R_tmp[:, :self.n_movies], 3)
+        self.matrix[self.matrix > 5] = 5
+        self.matrix[self.matrix < 1] = 1
 
     def GetUserItemFeatures(self, u_vec):
         """
@@ -877,6 +949,35 @@ class Evaluate(object):
             self.vals_vecs_folds.append(vvals)
             self.tests_vecs_folds.append(v_tests)
 
+    def user_recommend(self, preds, u, top=10):
+        """
+        Description: 获取某个用户推荐列表
+        :param u:
+        :param top:
+        :return:
+        """
+        items_idx = np.argsort(preds[u])[::-1]
+        cnt = 0
+        vec_recs = []
+        for i in items_idx:
+            if self.data_matrix[u, i] == 0 and cnt < top:
+                vec_recs.append(i + 1)
+                cnt += 1
+            elif cnt == top:
+                break
+        return vec_recs
+
+    def users_recommend(self, preds, n_users, top=10):
+        """
+        Description: 获取所有用户的推荐字典
+        :param top:
+        :return:
+        """
+        recommend_dict = {}
+        for u in xrange(n_users):
+            recommend_dict[u] = self.user_recommend(preds, u, top)
+        return recommend_dict
+
     def evaluate(self):
         """
         Description:评估评分推荐
@@ -911,7 +1012,7 @@ class Evaluate(object):
         print err_itembased
         print "rmse_itembased_avg:", rmse_itembased_avg
 
-    def all_evaluate(self):
+    def rmse_evaluate(self):
         """
         Description:整体评估所有的方法
         :return:
@@ -1008,6 +1109,66 @@ class Evaluate(object):
         print "rmse_hybrid_cbf_cf:", rmse_hybrid_cbf_cf
         print "rmse_pred_cbf_regression:", rmse_pred_cbf_regression
         print "rmse_pred_cbf_average:", rmse_pred_cbf_average
+
+    def precision_recall_fscore_method(self, preds):
+        from sklearn.metrics import precision_recall_fscore_support
+        real_ratings_class = [1 if x >= 3 else 0 for x in self.data_matrix[self.data_matrix > 0]]
+        pred_ratings_class = [1 if x >= 3 else 0 for x in preds[self.data_matrix > 0]]
+        precision, recall, fbeta_score, support = precision_recall_fscore_support(real_ratings_class,
+                                                                                  pred_ratings_class)
+        return precision, recall, fbeta_score, support
+
+    def classfication_metric_evaluate(self):
+        # 基于用户推荐
+        cfitembased = ItemBasedCF(self.data_matrix, K=20)
+        cfitembased.CalcRatings()
+        preds_itembased = cfitembased.preds
+
+        # 基于用户推荐
+        cfuserbased = UserBasedCF(self.data_matrix, K=20)
+        cfuserbased.CalcRatings()
+        preds_userbased = cfuserbased.preds
+
+        # 基于模型推荐
+        modelcf = ModelCF(self.data_matrix)
+        preds_ALS = modelcf.ALS(20)
+
+        preds_NMF = modelcf.NMF_alg(30)
+
+        preds_SVD = modelcf.SVD(30)
+
+        preds_SVD_EM = modelcf.SVD_EM(30)
+
+        # 基于混合模型
+        hybird_svd = Hybird_svd(self.content_matrix, self.movies_list, self.data_matrix, 10)
+        preds_hybird_svd = hybird_svd.matrix
+
+        hybrid_cbf_cf = Hybrid_cbf_cf(self.content_matrix, self.movies_list, self.data_matrix)
+        pred_hybrid_cbf_cf, recommend_dict_all = hybrid_cbf_cf.CalcRatings()
+
+        # 基于内容
+        cbf = CBF(self.data_matrix, self.content_matrix)
+        pred_cbf_regression = cbf.CBF_regression()
+
+        pred_cbf_average = cbf.CBF_Average()
+        pred_cbf_average[pred_cbf_average > 5] = 5
+        pred_cbf_average[pred_cbf_average < 1] = 1
+
+        preds_dict = {}
+        preds_dict['preds_itembased'] = preds_itembased
+        preds_dict['preds_userbased'] = preds_userbased
+        preds_dict['preds_ALS'] = preds_ALS
+        preds_dict['preds_NMF'] = preds_NMF
+        preds_dict['preds_SVD'] = preds_SVD
+        preds_dict['preds_SVD_EM'] = preds_SVD_EM
+        preds_dict['pred_cbf_regression'] = pred_cbf_regression
+        preds_dict['pred_cbf_average'] = pred_cbf_average
+        preds_dict['pred_hybrid_cbf_cf'] = pred_hybrid_cbf_cf
+        preds_dict['preds_hybird_svd'] = preds_hybird_svd
+        for key, preds in preds_dict.iteritems():
+            precision, recall, fbeta_score, support = self.precision_recall_fscore_method(preds)
+            print key + "|precision:" + str(precision) + "|recall:" + str(recall) + "|f1:" + str(
+                fbeta_score) + "|support:" + str(support)
 
 
 class Main:
@@ -1120,4 +1281,22 @@ if __name__ == '__main__':
     # test = Main()
     # test.test_Hybird_svd()
     ev = Evaluate()
-    ev.all_evaluate()
+    ev.classfication_metric_evaluate()
+
+    # import os
+    #
+    # os.chdir("D:\\work\\liujm\\2017\\9\\20170911\\ml-100k\\ml-100k")
+    # # os.chdir("D:\\work\\liujm\\2017\\9\\20170919\\ml-20m\\ml-20m")
+    # header = ['user_id', 'item_id', 'rating', 'timestamp']
+    # # df = pd.read_csv(".\\ml-100k\u.data", sep="\t", names=header)
+    # # df = pd.read_csv(".\\ratings.csv", sep=',', names=header)
+    # df = pd.read_csv(".\\u.data", sep="\t", names=header)
+    # data_matrix = ratings_matrix(df)
+    # modelcf = ModelCF(data_matrix)
+    # preds = modelcf.SVD(30)
+    # real_ratings_class = [1 if x >= 3 else 0 for x in data_matrix[data_matrix > 0]]
+    # pred_ratings_class = [1 if x >= 3 else 0 for x in preds[data_matrix > 0]]
+    # print real_ratings_class
+    # print pred_ratings_class
+    # print type(real_ratings_class)
+    # print type(pred_ratings_class)
