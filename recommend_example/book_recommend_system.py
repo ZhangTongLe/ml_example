@@ -52,8 +52,8 @@ def imputation(inp, Ri):
         Description: 使用用户的已经评分的平均分数代替未评分的位置
         :return:
         """
+
         for i in xrange(len(Ri)):
-            #
             Ri[i][Ri[i] == 0] = sum(Ri[i]) / float(len(Ri[i][Ri[i] > 0]))
         return Ri
 
@@ -62,6 +62,7 @@ def imputation(inp, Ri):
         Description: 使用商品的评分分代替未评分的位置
         :return:
         """
+
         for i in xrange(len(Ri[0])):
             Ri[:, i][Ri[:, i] == 0] = sum(Ri[:, i]) / float(len(Ri[:, i][Ri[:, i] > 0]))
         return Ri
@@ -1282,21 +1283,3 @@ if __name__ == '__main__':
     # test.test_Hybird_svd()
     ev = Evaluate()
     ev.classfication_metric_evaluate()
-
-    # import os
-    #
-    # os.chdir("D:\\work\\liujm\\2017\\9\\20170911\\ml-100k\\ml-100k")
-    # # os.chdir("D:\\work\\liujm\\2017\\9\\20170919\\ml-20m\\ml-20m")
-    # header = ['user_id', 'item_id', 'rating', 'timestamp']
-    # # df = pd.read_csv(".\\ml-100k\u.data", sep="\t", names=header)
-    # # df = pd.read_csv(".\\ratings.csv", sep=',', names=header)
-    # df = pd.read_csv(".\\u.data", sep="\t", names=header)
-    # data_matrix = ratings_matrix(df)
-    # modelcf = ModelCF(data_matrix)
-    # preds = modelcf.SVD(30)
-    # real_ratings_class = [1 if x >= 3 else 0 for x in data_matrix[data_matrix > 0]]
-    # pred_ratings_class = [1 if x >= 3 else 0 for x in preds[data_matrix > 0]]
-    # print real_ratings_class
-    # print pred_ratings_class
-    # print type(real_ratings_class)
-    # print type(pred_ratings_class)
